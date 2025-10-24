@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -68,6 +67,17 @@
         .info-box p {
             line-height: 1.7;
             opacity: 0.9;
+        }
+
+        .ai-badge {
+            background: rgba(255,255,255,0.2);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 15px;
         }
 
         .create-section {
@@ -253,6 +263,47 @@
             font-style: italic;
         }
 
+        .message-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #f0f0f0;
+        }
+
+        .flag-btn {
+            background: none;
+            border: 1px solid #ddd;
+            color: #666;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .flag-btn:hover {
+            border-color: #ff6b6b;
+            color: #ff6b6b;
+            background: #fff5f5;
+        }
+
+        .flag-btn.flagged {
+            border-color: #ff6b6b;
+            color: #ff6b6b;
+            background: #fff5f5;
+            cursor: not-allowed;
+        }
+
+        .flag-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .no-messages {
             text-align: center;
             color: white;
@@ -317,6 +368,16 @@
             border-radius: 10px;
             margin: 20px 0;
             text-align: center;
+            line-height: 1.5;
+        }
+
+        .success-message {
+            background: #4CAF50;
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            text-align: center;
         }
 
         @media (max-width: 768px) {
@@ -343,6 +404,9 @@
         <div class="info-box">
             <h3 class="heart-icon">You Are Not Alone</h3>
             <p>This is a judgment-free zone where people living with bipolar disorder and their loved ones can share messages of support, hope, and understanding. Whether you're having a good day or a challenging one, your words can make a difference to someone who needs to hear them.</p>
+            <div class="ai-badge">
+                🛡️ Content Filtered · Messages are checked for safety and appropriateness
+            </div>
         </div>
 
         <div class="stats">
@@ -354,6 +418,7 @@
             <h2>Share Your Support</h2>
             <p class="description">Post an encouraging message to the community. Your words matter and can brighten someone's day.</p>
             <div id="errorMessage" class="error-message" style="display: none;"></div>
+            <div id="successMessage" class="success-message" style="display: none;"></div>
             <form id="messageForm">
                 <div class="form-group">
                     <label for="message">Your message of support:</label>
@@ -386,9 +451,7 @@
 
         <section id="messagesSection">
             <div class="loading" id="loading">Loading messages...</div>
-            <div id="messagesContainer" class="messages-grid" style="display: none;">
-                <!-- Messages will be displayed here -->
-            </div>
+            <div id="messagesContainer" class="messages-grid" style="display: none;"></div>
             <div id="noMessages" class="no-messages" style="display: none;">
                 Be the first to share a message of support.
             </div>
@@ -418,14 +481,12 @@
         </section>
     </div>
 
-    <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getFirestore, collection, addDoc, query, orderBy, limit, getDocs, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+        import { getFirestore, collection, addDoc, query, orderBy, limit, getDocs, serverTimestamp, doc, updateDoc, increment } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
 
         // ⚠️ REPLACE WITH YOUR FIREBASE CONFIG
-        // Get this from Firebase Console > Project Settings > Your Apps
-        const firebaseConfig = {
+       const firebaseConfig = {
             apiKey: "AIzaSyBoBtBuqWFOS5VxZdZf4kBuFcOyjj3xqcE",
             authDomain: "bipolar-support-wall.firebaseapp.com",
             projectId: "bipolar-support-wall",
@@ -437,16 +498,17 @@
 
         // Initialize Firebase
         let app, db;
+        
         try {
             app = initializeApp(firebaseConfig);
             db = getFirestore(app);
-            console.log('Firebase initialized successfully');
+            console.log('✅ Firebase initialized');
         } catch (error) {
-            console.error('Firebase initialization error:', error);
-            showError('Failed to connect to database. Please check your Firebase configuration.');
+            console.error('❌ Firebase error:', error);
+            showError('Failed to connect to database.');
         }
 
-        // Message type colors and labels
+        // Message types
         const messageTypes = {
             'encouragement': { color: '#ff6b6b', label: 'Encouragement' },
             'hope': { color: '#ffd93d', label: 'Hope & Positivity' },
@@ -458,177 +520,288 @@
             'gratitude': { color: '#e67e22', label: 'Gratitude' }
         };
 
-        // Load messages from Firebase
+        // CLIENT-SIDE KEYWORD FILTER
+        function checkContentSafety(text) {
+            const lower = text.toLowerCase();
+            
+            // Block harmful phrases
+            const harmful = [
+                'kill yourself', 'kys', 'end it all', 'commit suicide',
+                'you should die', 'jump off', 'hang yourself',
+                'everyone hates you', 'worthless piece', 'better off dead'
+            ];
+            
+            for (const phrase of harmful) {
+                if (lower.includes(phrase)) {
+                    return {
+                        approved: false,
+                        reason: 'Message contains harmful language. Please rephrase supportively.'
+                    };
+                }
+            }
+            
+            // Block hate speech
+            const hate = [
+                'bipolar people are crazy', 'you\'re a psycho',
+                'mentally ill are dangerous', 'you\'re a retard'
+            ];
+            
+            for (const phrase of hate) {
+                if (lower.includes(phrase)) {
+                    return {
+                        approved: false,
+                        reason: 'Message contains discriminatory language. Please be respectful.'
+                    };
+                }
+            }
+            
+            // Block spam
+            const spam = ['buy now', 'click here', 'limited offer', 'crypto investment'];
+            let spamCount = 0;
+            for (const s of spam) {
+                if (lower.includes(s)) spamCount++;
+            }
+            if (spamCount >= 2) {
+                return {
+                    approved: false,
+                    reason: 'Spam detected. Please keep messages supportive.'
+                };
+            }
+            
+            // Block dangerous medical advice
+            const medical = ['stop taking your meds', 'medication is poison'];
+            for (const phrase of medical) {
+                if (lower.includes(phrase)) {
+                    return {
+                        approved: false,
+                        reason: 'Please don\'t give medical advice.'
+                    };
+                }
+            }
+            
+            // Allow support-seeking
+            const support = ['struggling', 'need help', 'dark thoughts', 'feel alone'];
+            if (support.some(s => lower.includes(s))) {
+                return { approved: true, reason: 'Support seeking' };
+            }
+            
+            // Allow positive
+            const positive = ['hope', 'support', 'proud', 'love', 'care'];
+            if (positive.some(p => lower.includes(p))) {
+                return { approved: true, reason: 'Supportive' };
+            }
+            
+            // Check short negative messages
+            if (text.length < 50) {
+                const negative = ['awful', 'terrible', 'worst', 'hate'];
+                if (negative.some(n => lower.includes(n))) {
+                    return {
+                        approved: false,
+                        reason: 'Please add more supportive context.'
+                    };
+                }
+            }
+            
+            return { approved: true, reason: 'Approved' };
+        }
+
+        // Load messages
         async function loadMessages() {
             try {
-                const messagesRef = collection(db, 'messages');
-                const q = query(messagesRef, orderBy('timestamp', 'desc'), limit(50));
-                const querySnapshot = await getDocs(q);
+                const q = query(collection(db, 'messages'), orderBy('timestamp', 'desc'), limit(50));
+                const snapshot = await getDocs(q);
                 
                 const messages = [];
-                querySnapshot.forEach((doc) => {
+                snapshot.forEach(doc => {
                     const data = doc.data();
                     messages.push({
                         id: doc.id,
                         ...data,
-                        timestamp: data.timestamp?.toDate() || new Date()
+                        timestamp: data.timestamp ? data.timestamp.toDate() : new Date(),
+                        flagCount: data.flagCount || 0
                     });
                 });
                 
                 displayMessages(messages);
                 updateMessageCount(messages.length);
-                
                 document.getElementById('loading').style.display = 'none';
-                
             } catch (error) {
-                console.error('Error loading messages:', error);
-                document.getElementById('loading').textContent = 'Error loading messages. Please refresh the page.';
+                console.error('Load error:', error);
+                document.getElementById('loading').textContent = 'Error loading messages.';
             }
         }
 
-        // Save message to Firebase
-        async function saveMessage(messageData) {
-            try {
-                const messagesRef = collection(db, 'messages');
-                const docRef = await addDoc(messagesRef, {
-                    content: messageData.content,
-                    type: messageData.type,
-                    timestamp: serverTimestamp(),
-                    createdAt: new Date().toISOString()
-                });
-                
-                console.log('Message saved with ID:', docRef.id);
-                return docRef;
-            } catch (error) {
-                console.error('Error saving message:', error);
-                throw error;
-            }
+        // Save message
+        async function saveMessage(data) {
+            const docRef = await addDoc(collection(db, 'messages'), {
+                content: data.content,
+                type: data.type,
+                timestamp: serverTimestamp(),
+                createdAt: new Date().toISOString(),
+                flagCount: 0
+            });
+            return docRef;
         }
+
+        // Flag message
+        async function flagMessage(id) {
+            if (flaggedMessages.includes(id)) {
+                showError('Already flagged.');
+                return false;
+            }
+            await updateDoc(doc(db, 'messages', id), { flagCount: increment(1) });
+            flaggedMessages.push(id);
+            return true;
+        }
+
+        let flaggedMessages = [];
 
         // Display messages
         function displayMessages(messages) {
             const container = document.getElementById('messagesContainer');
-            const noMessagesDiv = document.getElementById('noMessages');
+            const noMsg = document.getElementById('noMessages');
             
             if (messages.length === 0) {
                 container.style.display = 'none';
-                noMessagesDiv.style.display = 'block';
+                noMsg.style.display = 'block';
                 return;
             }
             
             container.style.display = 'grid';
-            noMessagesDiv.style.display = 'none';
+            noMsg.style.display = 'none';
             
             container.innerHTML = messages.map(msg => {
-                const typeInfo = messageTypes[msg.type] || messageTypes['encouragement'];
-                const timestamp = msg.timestamp instanceof Date ? 
-                    msg.timestamp.toLocaleString() : 
-                    new Date(msg.timestamp).toLocaleString();
+                const type = messageTypes[msg.type] || messageTypes.encouragement;
+                const time = msg.timestamp.toLocaleString();
+                const flagged = flaggedMessages.includes(msg.id);
                 
                 return `
-                    <div class="message-card" style="--card-color: ${typeInfo.color}">
-                        <div class="message-type" style="background: ${typeInfo.color}">${typeInfo.label}</div>
+                    <div class="message-card" style="--card-color: ${type.color}">
+                        <div class="message-type" style="background: ${type.color}">${type.label}</div>
                         <div class="message-content">${escapeHtml(msg.content)}</div>
-                        <div class="message-timestamp">${timestamp}</div>
+                        <div class="message-timestamp">${time}</div>
+                        <div class="message-actions">
+                            <button class="flag-btn ${flagged ? 'flagged' : ''}" 
+                                    onclick="handleFlag('${msg.id}')" ${flagged ? 'disabled' : ''}>
+                                ${flagged ? '🚩 Flagged' : '🚩 Flag'}
+                            </button>
+                        </div>
                     </div>
                 `;
             }).join('');
         }
 
-        // Update message count
         function updateMessageCount(count) {
             document.getElementById('messageCount').textContent = count;
         }
 
-        // Show error message
-        function showError(message) {
-            const errorDiv = document.getElementById('errorMessage');
-            errorDiv.textContent = message;
-            errorDiv.style.display = 'block';
-            setTimeout(() => {
-                errorDiv.style.display = 'none';
-            }, 5000);
+        function showError(msg) {
+            const el = document.getElementById('errorMessage');
+            el.innerHTML = msg;
+            el.style.display = 'block';
+            setTimeout(() => el.style.display = 'none', 8000);
         }
 
-        // Escape HTML to prevent XSS
+        function showSuccess(msg) {
+            const el = document.getElementById('successMessage');
+            el.textContent = msg;
+            el.style.display = 'block';
+            setTimeout(() => el.style.display = 'none', 5000);
+        }
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
 
+        window.handleFlag = async function(id) {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.innerHTML = '⏳...';
+            
+            try {
+                if (await flagMessage(id)) {
+                    btn.innerHTML = '🚩 Flagged';
+                    btn.classList.add('flagged');
+                    showSuccess('✓ Message flagged. Thank you!');
+                } else {
+                    btn.disabled = false;
+                    btn.innerHTML = '🚩 Flag';
+                }
+            } catch (error) {
+                showError('Failed to flag.');
+                btn.disabled = false;
+                btn.innerHTML = '🚩 Flag';
+            }
+        };
+
         // Form submission
         document.getElementById('messageForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             
-            const messageText = document.getElementById('message').value.trim();
-            const messageType = document.getElementById('messageType').value;
-            const submitBtn = document.getElementById('submitBtn');
+            const text = document.getElementById('message').value.trim();
+            const type = document.getElementById('messageType').value;
+            const btn = document.getElementById('submitBtn');
             
-            if (!messageText || !messageType) {
-                showError('Please fill in all fields');
+            if (!text || !type) {
+                showError('Fill in all fields');
                 return;
             }
 
-            // Basic content validation
-            if (messageText.length < 10) {
-                showError('Please write a longer message (at least 10 characters)');
+            if (text.length < 10) {
+                showError('Message too short (min 10 characters)');
                 return;
             }
 
-            if (messageText.length > 1000) {
-                showError('Message is too long (maximum 1000 characters)');
+            if (text.length > 1000) {
+                showError('Message too long (max 1000 characters)');
                 return;
             }
             
-            // Disable submit button
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Posting...';
+            btn.disabled = true;
+            btn.textContent = 'Checking...';
             
             try {
-                await saveMessage({
-                    content: messageText,
-                    type: messageType
-                });
+                const check = checkContentSafety(text);
                 
-                // Reset form
+                if (!check.approved) {
+                    showError(check.reason);
+                    btn.textContent = 'Post to Support Wall';
+                    btn.disabled = false;
+                    return;
+                }
+                
+                btn.textContent = 'Posting...';
+                await saveMessage({ content: text, type: type });
+                
                 document.getElementById('messageForm').reset();
+                btn.textContent = '✨ Posted!';
+                btn.style.background = '#4CAF50';
                 
-                // Show success feedback
-                submitBtn.textContent = '✨ Message Posted!';
-                submitBtn.style.background = '#4CAF50';
-                
-                // Reload messages
+                showSuccess('✓ Message posted!');
                 await loadMessages();
                 
-                // Scroll to messages
                 setTimeout(() => {
                     document.getElementById('messagesSection').scrollIntoView({ behavior: 'smooth' });
                 }, 500);
                 
-                // Reset button after delay
                 setTimeout(() => {
-                    submitBtn.textContent = 'Post to Support Wall';
-                    submitBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-                    submitBtn.disabled = false;
+                    btn.textContent = 'Post to Support Wall';
+                    btn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+                    btn.disabled = false;
                 }, 3000);
                 
             } catch (error) {
-                console.error('Error posting message:', error);
-                showError('Failed to post message. Please try again.');
-                submitBtn.textContent = 'Post to Support Wall';
-                submitBtn.disabled = false;
+                console.error('Error:', error);
+                showError('Failed to post: ' + error.message);
+                btn.textContent = 'Post to Support Wall';
+                btn.disabled = false;
             }
         });
 
-        // Initialize - Load messages on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            if (db) {
-                loadMessages();
-            } else {
-                document.getElementById('loading').textContent = 'Database connection failed. Please check configuration.';
-            }
-        });
+        // Initialize
+        if (db) loadMessages();
     </script>
 </body>
 </html>
